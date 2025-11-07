@@ -69,7 +69,8 @@ public class DownloadService extends Service {
         if (intent != null) {
             dropRequestId = intent.getStringExtra("drop_request_id");
             final String senderId = intent.getStringExtra("sender_id");
-            final String filename = intent.getStringExtra("filename");
+            final String originalFilename = intent.getStringExtra("original_filename");
+            final String cloakedFilename = intent.getStringExtra("cloaked_filename");
             final long filesize = intent.getLongExtra("filesize", 0);
 
             Notification notification = buildNotification("Starting download...", true, 0, 0);
@@ -78,7 +79,7 @@ public class DownloadService extends Service {
             downloadThread = new Thread(new Runnable() {
                 @Override
                 public void run() {
-                    startDownloadProcess(dropRequestId, senderId, filename, filesize);
+                    startDownloadProcess(dropRequestId, senderId, originalFilename, cloakedFilename, filesize);
                 }
             });
             downloadThread.start();
@@ -86,7 +87,7 @@ public class DownloadService extends Service {
         return START_NOT_STICKY;
     }
 
-    private void startDownloadProcess(String docId, String senderId, final String filename, final long totalSize) {
+    private void startDownloadProcess(String docId, String senderId, final String originalFilename, final String cloakedFilename, final long totalSize) {
         final DocumentReference docRef = db.collection("drop_requests").document(docId);
         listenForStatusChange(docRef);
 
@@ -106,7 +107,7 @@ public class DownloadService extends Service {
                     return;
                 }
                 int senderPort = (int) senderPortLong;
-                downloadFile(senderIp, senderPort, filename, totalSize, secretNumber);
+                downloadFile(senderIp, senderPort, originalFilename, cloakedFilename, totalSize, secretNumber);
             }
         }).addOnFailureListener(new OnFailureListener() {
             @Override
@@ -116,7 +117,7 @@ public class DownloadService extends Service {
         });
     }
 
-    private void downloadFile(String host, int port, String filename, long totalSize, String secretNumber) {
+    private void downloadFile(String host, int port, String originalFilename, String cloakedFilename, long totalSize, String secretNumber) {
         long bytesDownloaded = 0;
         Socket socket = null;
         InputStream in = null;
@@ -132,21 +133,27 @@ public class DownloadService extends Service {
                     socket = new Socket(host, port);
                     out = socket.getOutputStream();
                     PrintWriter writer = new PrintWriter(out, true);
-                    
-                    writer.println("GET / HTTP/1.1");
+
+                    // Bug Fix: Request the cloakedFilename from the server
+                    writer.println("GET /" + cloakedFilename + " HTTP/1.1");
                     writer.println("Host: " + host);
                     writer.println("Range: bytes=" + bytesDownloaded + "-");
                     writer.println();
 
                     in = new BufferedInputStream(socket.getInputStream());
-                    
+
                     String line;
                     long contentLength = -1;
-                    
-                    while ((line = readLine(in)) != null && !line.isEmpty()) {
-                        String lowerLine = line.toLowerCase();
-                        if (lowerLine.startsWith("content-length:")) {
-                            contentLength = Long.parseLong(line.substring(15).trim());
+                    boolean headersEnded = false;
+
+                    while (!headersEnded && (line = readLine(in)) != null) {
+                        if (line.isEmpty()) {
+                            headersEnded = true;
+                        } else {
+                            String lowerLine = line.toLowerCase();
+                            if (lowerLine.startsWith("content-length:")) {
+                                contentLength = Long.parseLong(line.substring(15).trim());
+                            }
                         }
                     }
 
@@ -158,7 +165,7 @@ public class DownloadService extends Service {
                     byte[] buffer = new byte[8192];
                     int bytesRead;
                     long bytesToRead = contentLength;
-                    
+
                     while (bytesToRead > 0 && (bytesRead = in.read(buffer, 0, (int) Math.min(buffer.length, bytesToRead))) != -1) {
                         if (isCancelled) break;
                         fos.write(buffer, 0, bytesRead);
@@ -171,7 +178,12 @@ public class DownloadService extends Service {
                     Log.w(TAG, "Connection lost, will retry... " + e.getMessage());
                     try { if (socket != null) socket.close(); } catch (IOException ignored) {}
                     try { if (fos != null) fos.close(); } catch (IOException ignored) {}
-                    Thread.sleep(5000); 
+                    try {
+                        Thread.sleep(5000);
+                    } catch (InterruptedException interruptedException) {
+                        isCancelled = true;
+                        Thread.currentThread().interrupt(); // Preserve the interrupted status
+                    }
                 }
             }
 
@@ -186,7 +198,8 @@ public class DownloadService extends Service {
                 if (!publicDir.exists()) {
                     publicDir.mkdirs();
                 }
-                File finalFile = new File(publicDir, filename);
+                // Bug Fix: Save the final file using the originalFilename
+                File finalFile = new File(publicDir, originalFilename);
 
                 boolean success = CloakingManager.restoreFile(tempCloakedFile, finalFile, secretNumber);
                 if (success) {
@@ -220,15 +233,24 @@ public class DownloadService extends Service {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         int c;
         while ((c = in.read()) != -1) {
+            if (c == '\r') {
+                // Handle CRLF line endings by looking ahead for LF
+                int next = in.read();
+                if (next != '\n' && next != -1) {
+                    // This was a standalone CR, not part of CRLF
+                    // We need to handle this case if it's possible in the input
+                }
+                break;
+            }
             if (c == '\n') {
                 break;
             }
             bos.write(c);
         }
-        if(c == -1 && bos.size() == 0){
+        if (c == -1 && bos.size() == 0) {
             return null;
         }
-        return bos.toString("UTF-8").trim();
+        return bos.toString("UTF-8");
     }
 
 
@@ -241,7 +263,7 @@ public class DownloadService extends Service {
                 }
                 if (snapshot != null && snapshot.exists()) {
                     String status = snapshot.getString("status");
-                    if ("error".equals(status) || "declined".equals(status)) {
+                    if ("error".equals(status) || "declined".equals(status) || "cancelled".equals(status)) {
                         isCancelled = true;
                         if (downloadThread != null) {
                             downloadThread.interrupt();
@@ -284,7 +306,6 @@ public class DownloadService extends Service {
             tempCloakedFile.delete();
         }
 
-        // --- THIS IS THE UPDATE ---
         // Client-side cleanup: Attempt to delete the Firestore document.
         if (dropRequestId != null) {
             db.collection("drop_requests").document(dropRequestId).delete()
@@ -293,12 +314,18 @@ public class DownloadService extends Service {
                     public void onSuccess(Void aVoid) {
                         Log.d(TAG, "Drop request document successfully deleted by receiver.");
                     }
+                })
+                .addOnFailureListener(new OnFailureListener() {
+                     @Override
+                     public void onFailure(@NonNull Exception e) {
+                        Log.w(TAG, "Failed to delete drop request document on receiver side.", e);
+                     }
                 });
         }
-        
+
         stopForeground(true);
     }
-    
+
     private void scanFile(File file) {
         Intent mediaScanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
         mediaScanIntent.setData(Uri.fromFile(file));
