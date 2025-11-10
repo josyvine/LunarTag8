@@ -8,13 +8,13 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import org.libtorrent4j.AddTorrentParams;
 import org.libtorrent4j.AlertListener;
-import org.libtorrent4j.InfoHash;  // Updated: Replaces Sha1Hash
+import org.libtorrent4j.InfoHash;
 import org.libtorrent4j.SessionManager;
 import org.libtorrent4j.TorrentHandle;
 import org.libtorrent4j.TorrentInfo;
 import org.libtorrent4j.TorrentStatus;
 import org.libtorrent4j.alerts.Alert;
-import org.libtorrent4j.alerts.StateUpdateAlert;  // 2.x: Still StateUpdateAlert (binds to torrent_status_updated_alert)
+import org.libtorrent4j.alerts.StateUpdateAlert;
 import org.libtorrent4j.alerts.TorrentErrorAlert;
 import org.libtorrent4j.alerts.TorrentFinishedAlert;
 import org.libtorrent4j.swig.create_torrent;
@@ -36,7 +36,7 @@ public class TorrentManager {
     private final SessionManager sessionManager;
     private final Context appContext;
 
-    // Maps to track active torrents (Updated: InfoHash)
+    // Maps to track active torrents
     private final Map<String, TorrentHandle> activeTorrents; // dropRequestId -> TorrentHandle
     private final Map<InfoHash, String> hashToIdMap; // infoHash -> dropRequestId
 
@@ -50,15 +50,15 @@ public class TorrentManager {
         sessionManager.addListener(new AlertListener() {
             @Override
             public int[] types() {
-                // 2.x: Hardcoded libtorrent constants for alert.what() values
+                // 2.x: Hardcoded libtorrent constants for alert.type() values
                 // 7 = state_update_alert, 15 = torrent_finished_alert, 13 = torrent_error_alert
                 return new int[] { 7, 15, 13 };
             }
 
             @Override
             public void alert(Alert<?> alert) {
-                // 2.x: Use alert.what() for type (int)
-                int alertType = alert.what();
+                // 2.x: Use alert.type() instead of alert.what()
+                int alertType = alert.type();
 
                 if (alertType == 7) {  // state_update_alert
                     handleStateUpdate((StateUpdateAlert) alert);
@@ -94,7 +94,7 @@ public class TorrentManager {
             if (dropRequestId != null) {
                 Intent intent = new Intent(DropProgressActivity.ACTION_UPDATE_STATUS);
                 intent.putExtra(DropProgressActivity.EXTRA_STATUS_MAJOR, status.isSeeding() ? "Sending File..." : "Receiving File...");
-                intent.putExtra(DropProgressActivity.EXTRA_STATUS_MINOR, "Peers: " + status.numPeers() + " | ↓ " + (status.downloadPayloadRate() / 1024) + " KB/s | ↑ " + (status.uploadPayloadRate() / 1024) + " KB/s");
+                intent.putExtra(DropProgressActivity.EXTRA_STATUS_MINOR, "Peers: " + status.numPeers() + " | Down: " + (status.downloadPayloadRate() / 1024) + " KB/s | Up: " + (status.uploadPayloadRate() / 1024) + " KB/s");
                 // 2.x: total_done() and total_wanted() are long; cast if <2GB
                 intent.putExtra(DropProgressActivity.EXTRA_PROGRESS, (int) status.totalDone());
                 intent.putExtra(DropProgressActivity.EXTRA_MAX_PROGRESS, (int) status.totalWanted());
@@ -149,20 +149,20 @@ public class TorrentManager {
         try {
             torrentFile = createTorrentFile(dataFile);
             final TorrentInfo torrentInfo = new TorrentInfo(torrentFile);
-            
+
             AddTorrentParams params = new AddTorrentParams();
-            // 2.x: Use setters
-            params.setTi(torrentInfo);
+            // 2.x: Use setTorrentInfo instead of setTi
+            params.setTorrentInfo(torrentInfo);
             params.setSavePath(dataFile.getParentFile().getAbsolutePath());
-            
-            // 2.x: addTorrent returns TorrentHandle directly
-            TorrentHandle handle = sessionManager.addTorrent(params);
+
+            // 2.x: download() instead of addTorrent()
+            TorrentHandle handle = sessionManager.download(params);
 
             if (handle != null && handle.isValid()) {
                 activeTorrents.put(dropRequestId, handle);
                 // Updated: infoHash() returns InfoHash
                 hashToIdMap.put(handle.infoHash(), dropRequestId);
-                // 2.x: make_magnet_uri()
+                // 2.x: make_magnet_uri() → makeMagnetUri()
                 String magnetLink = handle.makeMagnetUri();
                 Log.d(TAG, "Started seeding for request ID " + dropRequestId + ". Magnet: " + magnetLink);
                 return magnetLink;
@@ -182,18 +182,18 @@ public class TorrentManager {
 
     private File createTorrentFile(File dataFile) throws IOException {
         file_storage fs = new file_storage();
-        // 2.x: add_file(String, long)
-        fs.add_file(dataFile.getName(), dataFile.length());
-        // 2.x: Same
-        int pieceSize = (int) libtorrent.default_torrent_piece_size(fs);
+        // 2.x: add_files(path) instead of add_file(name, size)
+        libtorrent.add_files(fs, dataFile.getAbsolutePath());
+        // 2.x: optimal_piece_size instead of default_torrent_piece_size
+        int pieceSize = (int) libtorrent.optimal_piece_size(fs);
         create_torrent ct = new create_torrent(fs, pieceSize);
 
         // 2.x: Generate hashes first
         ct.generate();
-        // Optional: ct.addTracker("udp://tracker.opentrackr.org:1337/announce"); for public tracker
+        // Optional: ct.addTracker("udp://tracker.opentrackr.org:1337/announce");
 
         // 2.x: bencode() after generate()
-        byte[] torrentBytes = ct.bencode();
+        byte[] torrentBytes = ct.generate().bencode();
 
         // Write to temp .torrent file
         File tempTorrent = File.createTempFile("seed_", ".torrent", dataFile.getParentFile());
@@ -212,9 +212,9 @@ public class TorrentManager {
             // 2.x: parseMagnetUri(String) static
             AddTorrentParams params = AddTorrentParams.parseMagnetUri(magnetLink);
             params.setSavePath(saveDirectory.getAbsolutePath());
-            
-            // 2.x: addTorrent returns TorrentHandle
-            TorrentHandle handle = sessionManager.addTorrent(params);
+
+            // 2.x: download() instead of addTorrent()
+            TorrentHandle handle = sessionManager.download(params);
 
             if (handle != null && handle.isValid()) {
                 activeTorrents.put(dropRequestId, handle);
@@ -241,8 +241,8 @@ public class TorrentManager {
             activeTorrents.remove(dropRequestId);
             hashToIdMap.remove(hash);
         }
-        // 2.x: remove_torrent(TorrentHandle)
-        sessionManager.removeTorrent(handle);
+        // 2.x: remove() instead of removeTorrent()
+        sessionManager.remove(handle);
         Log.d(TAG, "Cleaned up and removed torrent for request ID: " + (dropRequestId != null ? dropRequestId : "unknown"));
     }
 
