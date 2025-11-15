@@ -317,21 +317,42 @@ public class ContactsFragment extends Fragment implements ContactsAdapter.OnCont
         });
     }
 
+    // --- THIS IS THE UPDATED METHOD ---
     @Override
     public void onAcceptRequest(DocumentSnapshot request) {
         String senderUid = request.getString("senderUid");
         String senderName = request.getString("senderName");
-        String recipientUid = Objects.requireNonNull(mAuth.getCurrentUser()).getUid();
 
-        // Placeholder for phone number - in a real app, this should be part of the user's profile
-        String senderPhone = "123-456-7890"; // This needs a proper source
-        Contact newContact = new Contact(senderName, senderPhone, senderUid);
+        if (senderUid == null) return;
 
-        contactsManager.addPriorityContact(newContact);
-        loadContacts();
+        // Fetch the sender's full profile to get their phone number
+        db.collection("users").document(senderUid).get()
+            .addOnCompleteListener(new OnCompleteListener<DocumentSnapshot>() {
+                @Override
+                public void onComplete(@NonNull Task<DocumentSnapshot> task) {
+                    if (task.isSuccessful() && task.getResult() != null) {
+                        DocumentSnapshot userProfile = task.getResult();
+                        // This assumes the phone number is stored in a field called "phoneNumber"
+                        String senderPhone = userProfile.getString("phoneNumber");
 
-        // Delete the request from Firestore
-        request.getReference().delete();
+                        // If the phone number field doesn't exist in their profile, use a safe default
+                        if (senderPhone == null || senderPhone.isEmpty()) {
+                            senderPhone = "No number provided";
+                        }
+
+                        // Create the contact with the REAL phone number and UID, then save it
+                        Contact newContact = new Contact(senderName, senderPhone, senderUid);
+                        contactsManager.addPriorityContact(newContact);
+                        loadContacts(); // Refresh the screen to show the new contact
+
+                        // Finally, delete the request from Firestore now that it's handled
+                        request.getReference().delete();
+                    } else {
+                        Log.w(TAG, "Failed to get user profile for sender: " + senderUid, task.getException());
+                        Toast.makeText(getContext(), "Could not find user profile to add contact.", Toast.LENGTH_SHORT).show();
+                    }
+                }
+            });
     }
 
     @Override
