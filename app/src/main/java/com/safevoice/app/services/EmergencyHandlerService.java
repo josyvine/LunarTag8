@@ -261,4 +261,4 @@ public class EmergencyHandlerService extends Service implements WebRTCManager.We
         Log.i(TAG, "WebRTC call ended or failed. Stopping service.");
         stopSelf();
     }
-}
+} 
