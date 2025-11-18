@@ -13,7 +13,7 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
-import androidx.navigation.fragment.NavHostFragment; 
+import androidx.navigation.fragment.NavHostFragment;
 
 import com.lunartag.app.R;
 import com.lunartag.app.databinding.FragmentSettingsBinding;
@@ -46,7 +46,7 @@ public class SettingsFragment extends Fragment {
         loadSettings();
         setupClickListeners();
 
-        // This new method will check if the admin button should be shown
+        // This method will now show a toast with the admin flag's value
         setupAdminFeatures();
     }
 
@@ -137,15 +137,18 @@ public class SettingsFragment extends Fragment {
     }
 
     /**
-     * This new method checks for the admin feature toggle and configures the UI accordingly.
+     * This method checks for the admin feature toggle and configures the UI accordingly.
      */
     private void setupAdminFeatures() {
         // Access the feature toggles preferences that are set by the Firebase service
         SharedPreferences featureTogglePrefs = requireActivity().getSharedPreferences("LunarTagFeatureToggles", Context.MODE_PRIVATE);
         boolean isAdminModeEnabled = featureTogglePrefs.getBoolean("customTimestampEnabled", false);
 
+        // THIS IS THE IMPORTANT DEBUG LINE
+        Toast.makeText(getContext(), "Admin Flag is: " + isAdminModeEnabled, Toast.LENGTH_LONG).show();
+
         if (isAdminModeEnabled) {
-            // If the flag from Firebase is true, make the admin button visible
+            // If the flag is true, make the admin button visible
             binding.buttonAdminScheduleEditor.setVisibility(View.VISIBLE);
 
             // Add a click listener to the button to navigate to the schedule editor screen
