@@ -58,7 +58,7 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- Upcoming Send Card -->
+        <!-- Upcoming Send Card (Scheduled / Pending) -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -66,6 +66,7 @@
             android:text="Scheduled Sends"
             android:textAppearance="?attr/textAppearanceHeadline6" />
 
+        <!-- MODIFIED: Now contains a RecyclerView instead of static text -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -77,21 +78,28 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="16dp">
+                android:padding="8dp">
 
+                <!-- This ID matches binding.recyclerViewScheduledSends in Java -->
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/recycler_view_scheduled_sends"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="100dp"
+                    android:orientation="horizontal"
+                    app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager"
+                    tools:listitem="@layout/item_photo_thumbnail"
+                    tools:itemCount="3" />
+
+                <!-- Empty state text (Optional, hidden by default via code logic) -->
                 <TextView
-                    android:id="@+id/text_next_scheduled_send"
+                    android:id="@+id/text_no_scheduled"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:textAppearance="?attr/textAppearanceBody1"
-                    tools:text="Next Send: 10:00:00 AM" />
-
-                <TextView
-                    android:id="@+id/text_pending_uploads"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    tools:text="Pending Uploads: 3" />
+                    android:layout_gravity="center"
+                    android:text="No pending uploads"
+                    android:visibility="gone"
+                    android:padding="16dp"/>
 
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
@@ -104,6 +112,7 @@
             android:text="Recent Photos"
             android:textAppearance="?attr/textAppearanceHeadline6" />
 
+        <!-- This is the Bottom Box -->
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/recycler_view_recent_photos"
             android:layout_width="match_parent"
