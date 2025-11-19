@@ -1,35 +1,48 @@
 package com.lunartag.app.ui.admin;
 
+import android.app.AlertDialog;
+import android.app.TimePickerDialog;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.SharedPreferences;
 import android.os.Bundle;
+import android.text.InputType;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.TimePicker;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
+import androidx.recyclerview.widget.LinearLayoutManager;
 
 import com.lunartag.app.databinding.FragmentScheduleEditorBinding;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+
+import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Collections;
+import java.util.List;
+
 public class ScheduleEditorFragment extends Fragment {
 
-    private static final String PREFS_NAME = "LunarTagFeatureToggles";
-    private static final String KEY_CUSTOM_TIMESTAMP_ENABLED = "customTimestampEnabled";
+    // These MUST match the keys used in CameraFragment to ensure they share data
+    private static final String PREFS_SCHEDULE = "LunarTagSchedule";
+    private static final String KEY_TIMESTAMP_LIST = "timestamp_list";
+    
+    // Keys for checking if the feature is enabled (to hide/show UI)
+    private static final String PREFS_TOGGLES = "LunarTagFeatureToggles";
+    private static final String KEY_ADMIN_ENABLED = "customTimestampEnabled";
 
     private FragmentScheduleEditorBinding binding;
-    private SharedPreferences featureTogglePrefs;
-    private boolean isFeatureEnabled = false;
-
-    @Override
-    public void onCreate(@Nullable Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        featureTogglePrefs = requireActivity().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        // Check if the feature is enabled. The default is false.
-        isFeatureEnabled = featureTogglePrefs.getBoolean(KEY_CUSTOM_TIMESTAMP_ENABLED, false);
-    }
+    private ScheduleAdapter adapter;
+    private List<Long> timestampList;
 
     @Override
     public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
@@ -41,39 +54,212 @@ public class ScheduleEditorFragment extends Fragment {
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
 
-        // This is the critical UI logic based on the remote toggle.
-        if (isFeatureEnabled) {
-            // If the feature is enabled, make the editor UI visible.
-            view.setVisibility(View.VISIBLE);
-            setupClickListeners();
-            // loadScheduledTimestamps(); // This method does not exist yet, so it is commented out to prevent another error.
-        } else {
-            // If the feature is disabled, hide this entire UI.
-            view.setVisibility(View.GONE);
-            // Optionally, navigate away or show a message.
+        // Check if Admin Mode is actually enabled via Remote Config
+        SharedPreferences featurePrefs = requireContext().getSharedPreferences(PREFS_TOGGLES, Context.MODE_PRIVATE);
+        boolean isFeatureEnabled = featurePrefs.getBoolean(KEY_ADMIN_ENABLED, false);
+
+        if (!isFeatureEnabled) {
+            // If disabled, hide everything and stop.
+            binding.getRoot().setVisibility(View.GONE);
+            return;
         }
+        
+        binding.getRoot().setVisibility(View.VISIBLE);
+
+        // Load existing timestamps from storage
+        timestampList = loadTimestamps();
+
+        // Setup RecyclerView
+        adapter = new ScheduleAdapter(timestampList, new ScheduleAdapter.OnTimestampDeleteListener() {
+            @Override
+            public void onTimestampDeleted(int position) {
+                timestampList.remove(position);
+                adapter.notifyItemRemoved(position);
+                saveTimestamps(timestampList); // Save changes immediately
+                updateCountUI();
+            }
+        });
+
+        binding.recyclerViewSchedule.setLayoutManager(new LinearLayoutManager(getContext()));
+        binding.recyclerViewSchedule.setAdapter(adapter);
+
+        updateCountUI();
+        setupClickListeners();
     }
 
     private void setupClickListeners() {
+        // 1. Manual Add Button
         binding.buttonAddTimestamp.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                // Logic to open a Date and Time picker to add a new timestamp.
-                Toast.makeText(getContext(), "Add Timestamp Clicked (Placeholder)", Toast.LENGTH_SHORT).show();
+                showTimePickerAndAdd();
             }
         });
 
+        // 2. Auto-Generate Button
         binding.buttonAutoGenerate.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                // Logic to open a dialog to auto-generate timestamps by interval.
-                Toast.makeText(getContext(), "Auto-Generate Clicked (Placeholder)", Toast.LENGTH_SHORT).show();
+                showAutoGenerateDialog();
             }
         });
     }
 
-    // You will need to implement this method later.
-    // private void loadScheduledTimestamps() {
-    //     // Logic to load and display saved timestamps.
-    // }
+    private void updateCountUI() {
+        // Optional: You could update a text view here to show "Total Slots: X"
+        // For now, we just ensure the list refreshes
+    }
+
+    // --- Logic: Add Single Timestamp ---
+
+    private void showTimePickerAndAdd() {
+        Calendar cal = Calendar.getInstance();
+        int hour = cal.get(Calendar.HOUR_OF_DAY);
+        int minute = cal.get(Calendar.MINUTE);
+
+        TimePickerDialog picker = new TimePickerDialog(getContext(), new TimePickerDialog.OnTimeSetListener() {
+            @Override
+            public void onTimeSet(TimePicker view, int hourOfDay, int minute) {
+                Calendar selectedTime = Calendar.getInstance();
+                selectedTime.set(Calendar.HOUR_OF_DAY, hourOfDay);
+                selectedTime.set(Calendar.MINUTE, minute);
+                selectedTime.set(Calendar.SECOND, 0);
+                selectedTime.set(Calendar.MILLISECOND, 0);
+                
+                // If the selected time is in the past for today, maybe add it for "tomorrow"?
+                // For simplicity, we just add the raw timestamp. 
+                // The Admin logic usually implies "Next available time regardless of date", 
+                // but typically we assume the schedule is for the current working day.
+                if (selectedTime.getTimeInMillis() < System.currentTimeMillis()) {
+                     // Optional: warn user or move to next day. 
+                     // We will leave it as is, allowing past timestamps if needed for back-filling.
+                }
+
+                addTimestamp(selectedTime.getTimeInMillis());
+            }
+        }, hour, minute, false);
+        picker.show();
+    }
+
+    private void addTimestamp(long timestamp) {
+        timestampList.add(timestamp);
+        Collections.sort(timestampList); // Keep them in chronological order
+        adapter.notifyDataSetChanged();
+        saveTimestamps(timestampList);
+        Toast.makeText(getContext(), "Timestamp Added", Toast.LENGTH_SHORT).show();
+    }
+
+    // --- Logic: Auto-Generate Schedule ---
+
+    private void showAutoGenerateDialog() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(getContext());
+        builder.setTitle("Auto-Generate Schedule");
+        builder.setMessage("Create slots from 8:00 AM to 5:00 PM?");
+
+        // Set up the input logic
+        // In a real app, we would have 3 text boxes here. 
+        // To keep this file self-contained without new XML, we will use a simple preset 
+        // or a programmatic layout. Let's use a simple preset for reliability.
+        
+        final EditText inputInterval = new EditText(getContext());
+        inputInterval.setInputType(InputType.TYPE_CLASS_NUMBER);
+        inputInterval.setHint("Interval in Minutes (Default: 15)");
+        
+        LinearLayout container = new LinearLayout(getContext());
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.setPadding(50, 20, 50, 20);
+        container.addView(inputInterval);
+        
+        builder.setView(container);
+
+        builder.setPositiveButton("Generate", new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                String intervalStr = inputInterval.getText().toString();
+                int interval = 15; // Default
+                if (!intervalStr.isEmpty()) {
+                    try {
+                        interval = Integer.parseInt(intervalStr);
+                    } catch (NumberFormatException e) {
+                        // keep default
+                    }
+                }
+                
+                // Hardcoded 8 AM to 5 PM logic for simplicity and robustness
+                generateSchedule(8, 0, 17, 0, interval);
+            }
+        });
+
+        builder.setNegativeButton("Cancel", null);
+        builder.setNeutralButton("Clear All", new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                timestampList.clear();
+                adapter.notifyDataSetChanged();
+                saveTimestamps(timestampList);
+                Toast.makeText(getContext(), "Schedule Cleared", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        builder.show();
+    }
+
+    private void generateSchedule(int startHour, int startMin, int endHour, int endMin, int intervalMinutes) {
+        timestampList.clear();
+        
+        Calendar current = Calendar.getInstance();
+        current.set(Calendar.HOUR_OF_DAY, startHour);
+        current.set(Calendar.MINUTE, startMin);
+        current.set(Calendar.SECOND, 0);
+        current.set(Calendar.MILLISECOND, 0);
+
+        Calendar end = Calendar.getInstance();
+        end.set(Calendar.HOUR_OF_DAY, endHour);
+        end.set(Calendar.MINUTE, endMin);
+        end.set(Calendar.SECOND, 0);
+
+        // Generate loop
+        while (current.before(end) || current.equals(end)) {
+            timestampList.add(current.getTimeInMillis());
+            current.add(Calendar.MINUTE, intervalMinutes);
+        }
+
+        Collections.sort(timestampList);
+        adapter.notifyDataSetChanged();
+        saveTimestamps(timestampList);
+        Toast.makeText(getContext(), "Generated " + timestampList.size() + " slots.", Toast.LENGTH_SHORT).show();
+    }
+
+    // --- Storage Helpers ---
+
+    private void saveTimestamps(List<Long> list) {
+        SharedPreferences prefs = requireContext().getSharedPreferences(PREFS_SCHEDULE, Context.MODE_PRIVATE);
+        JSONArray jsonArray = new JSONArray();
+        for (Long ts : list) {
+            jsonArray.put(ts);
+        }
+        prefs.edit().putString(KEY_TIMESTAMP_LIST, jsonArray.toString()).apply();
+    }
+
+    private List<Long> loadTimestamps() {
+        List<Long> list = new ArrayList<>();
+        SharedPreferences prefs = requireContext().getSharedPreferences(PREFS_SCHEDULE, Context.MODE_PRIVATE);
+        String json = prefs.getString(KEY_TIMESTAMP_LIST, "[]");
+        try {
+            JSONArray jsonArray = new JSONArray(json);
+            for (int i = 0; i < jsonArray.length(); i++) {
+                list.add(jsonArray.getLong(i));
+            }
+        } catch (JSONException e) {
+            e.printStackTrace();
+        }
+        Collections.sort(list);
+        return list;
+    }
+
+    @Override
+    public void onDestroyView() {
+        super.onDestroyView();
+        binding = null;
+    }
 }
