@@ -3,6 +3,7 @@ package com.lunartag.app.services;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.net.Uri;
@@ -36,40 +37,31 @@ public class SendService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         String filePath = intent.getStringExtra(EXTRA_FILE_PATH);
 
-        Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("Lunar Tag")
-                .setContentText("Preparing to send scheduled photo...")
-                .setSmallIcon(R.drawable.ic_camera) // A placeholder icon
-                .build();
-
-        startForeground(NOTIFICATION_ID, notification);
-
-        if (filePath != null && !filePath.isEmpty()) {
-            shareImageToWhatsApp(filePath);
-        } else {
+        if (filePath == null || filePath.isEmpty()) {
             Log.e(TAG, "File path was null or empty. Stopping service.");
             stopSelf();
+            return START_NOT_STICKY;
         }
 
-        // We stop the service ourselves, so START_NOT_STICKY is appropriate.
-        return START_NOT_STICKY;
-    }
-
-    private void shareImageToWhatsApp(String filePath) {
         File imageFile = new File(filePath);
         if (!imageFile.exists()) {
-            Log.e(TAG, "Image file does not exist: " + filePath);
+            Log.e(TAG, "Image file does not exist at path: " + filePath);
             stopSelf();
-            return;
+            return START_NOT_STICKY;
         }
 
-        // Use FileProvider to get a content URI
+        // --- FIX: Create a "Clickable" Notification instead of auto-launching ---
+        // Android 10+ blocks starting activities from background. 
+        // We must use a High-Priority notification that the user taps to launch WhatsApp.
+
+        // 1. Prepare the URI
         Uri imageUri = FileProvider.getUriForFile(
                 this,
                 getApplicationContext().getPackageName() + ".fileprovider",
                 imageFile
         );
 
+        // 2. Create the Intent that opens WhatsApp (SAME as before)
         Intent shareIntent = new Intent(Intent.ACTION_SEND);
         shareIntent.setType("image/*");
         shareIntent.putExtra(Intent.EXTRA_STREAM, imageUri);
@@ -77,24 +69,46 @@ public class SendService extends Service {
         shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         shareIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
 
-        try {
-            startActivity(shareIntent);
-        } catch (android.content.ActivityNotFoundException ex) {
-            Log.e(TAG, "WhatsApp is not installed.");
-            // Here you would handle the error, maybe show a toast.
-        } finally {
-            // The service has done its job of launching the UI.
-            stopSelf();
-        }
+        // 3. Wrap it in a PendingIntent (This makes it "wait" for the click)
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+                this,
+                0,
+                shareIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
+        // 4. Build the High-Priority Notification
+        Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("Scheduled Photo Ready")
+                .setContentText("Tap here to send to WhatsApp Group")
+                .setSmallIcon(R.drawable.ic_camera) // Your app icon
+                .setContentIntent(pendingIntent) // Connect the click to the intent
+                .setPriority(NotificationCompat.PRIORITY_HIGH) // Pop up on screen
+                .setCategory(NotificationCompat.CATEGORY_ALARM) // Ensure it rings through DND
+                .setAutoCancel(true) // Dismiss when clicked
+                .build();
+
+        // 5. Show it immediately
+        startForeground(NOTIFICATION_ID, notification);
+        
+        Log.d(TAG, "Notification posted. Waiting for user tap.");
+
+        // We do NOT stopSelf() immediately. We leave the notification active.
+        // The OS will eventually clean it up, or the user will click it.
+        return START_NOT_STICKY;
     }
 
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // IMPORTANCE_HIGH is critical for the "Heads Up" banner to appear over other apps
             NotificationChannel serviceChannel = new NotificationChannel(
                     CHANNEL_ID,
-                    "Scheduled Send Service",
-                    NotificationManager.IMPORTANCE_DEFAULT
+                    "Scheduled Send Notifications",
+                    NotificationManager.IMPORTANCE_HIGH
             );
+            serviceChannel.setDescription("Alerts when a photo is ready to be sent via WhatsApp");
+            serviceChannel.enableVibration(true);
+            
             NotificationManager manager = getSystemService(NotificationManager.class);
             if (manager != null) {
                 manager.createNotificationChannel(serviceChannel);
@@ -108,4 +122,4 @@ public class SendService extends Service {
         // This is a started service, not a bound service.
         return null;
     }
-          }
+}
