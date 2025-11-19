@@ -86,7 +86,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
 
-        <!-- Gallery Thumbnail (Left) -->
+        <!-- Gallery Thumbnail (Left Edge) -->
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/card_gallery_thumbnail"
             android:layout_width="60dp"
@@ -104,6 +104,22 @@
                 android:background="@android:color/darker_gray"/>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- FOLDER BUTTON (New: Placed between Gallery and Capture) -->
+        <!-- Uses system 'save' icon as placeholder for 'Select Folder' -->
+        <ImageButton
+            android:id="@+id/button_save_folder"
+            android:layout_width="50dp"
+            android:layout_height="50dp"
+            android:src="@android:drawable/ic_menu_save"
+            android:scaleType="fitCenter"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Select Save Folder"
+            app:tint="@android:color/white"
+            app:layout_constraintStart_toEndOf="@id/card_gallery_thumbnail"
+            app:layout_constraintEnd_toStartOf="@id/button_capture"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent"/>
+
 
         <!-- Shutter Button (Center) -->
         <ImageButton
@@ -119,8 +135,24 @@
             app:layout_constraintTop_toTopOf="parent"
             app:layout_constraintBottom_toBottomOf="parent"/>
 
-        <!-- Flip Camera Button (Right) - NEW ADDITION -->
-        <!-- Note: Using a standard android system icon for rotation if you don't have a custom one -->
+        <!-- GPS STATUS BUTTON (New: Placed between Capture and Flip) -->
+        <!-- Uses system 'mylocation' icon -->
+        <ImageButton
+            android:id="@+id/button_gps_status"
+            android:layout_width="50dp"
+            android:layout_height="50dp"
+            android:src="@android:drawable/ic_menu_mylocation"
+            android:scaleType="fitCenter"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Force GPS Refresh"
+            app:tint="@android:color/darker_gray"
+            app:layout_constraintStart_toEndOf="@id/button_capture"
+            app:layout_constraintEnd_toStartOf="@id/button_flip_camera"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent"/>
+
+
+        <!-- Flip Camera Button (Right Edge) -->
         <ImageButton
             android:id="@+id/button_flip_camera"
             android:layout_width="50dp"
@@ -152,8 +184,7 @@
 
     </androidx.constraintlayout.widget.ConstraintLayout>
 
-    <!-- LIVE DEBUG CONSOLE (Added for tracing issues) -->
-    <!-- Positioned below the top indicators (roughly 160dp down) to allow visibility -->
+    <!-- LIVE DEBUG CONSOLE (Kept EXACTLY as requested) -->
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="150dp"
