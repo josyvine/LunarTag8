@@ -1,5 +1,6 @@
-package com.lunartag.app.ui.dashboard; 
+package com.lunartag.app.ui.dashboard;
 
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Bundle;
@@ -16,15 +17,15 @@ import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.LinearLayoutManager;
 
 import com.lunartag.app.data.AppDatabase;
+import com.lunartag.app.data.PhotoDao;
 import com.lunartag.app.databinding.FragmentDashboardBinding;
 import com.lunartag.app.model.Photo;
 import com.lunartag.app.ui.gallery.GalleryAdapter;
+import com.lunartag.app.utils.Scheduler;
 
-import java.text.SimpleDateFormat;
+import java.io.File;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -39,14 +40,17 @@ public class DashboardFragment extends Fragment {
 
     // --- DB Components ---
     private ExecutorService databaseExecutor;
-    
+
     // Two separate adapters for the two boxes
     private GalleryAdapter scheduledAdapter;
     private GalleryAdapter recentAdapter;
-    
+
     // Data lists
     private List<Photo> scheduledPhotoList;
     private List<Photo> recentPhotoList;
+
+    // Track which adapter is currently in selection mode
+    private GalleryAdapter activeSelectionAdapter = null;
 
     @Override
     public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
@@ -65,13 +69,9 @@ public class DashboardFragment extends Fragment {
 
         // --- 1. Setup Top Box (Scheduled Sends) ---
         LinearLayoutManager scheduledManager = new LinearLayoutManager(getContext(), LinearLayoutManager.HORIZONTAL, false);
-        // Using 'recyclerViewScheduledSends' based on your UI text. 
-        // If your XML ID is different, update this variable name.
-        if (binding.recyclerViewScheduledSends != null) {
-            binding.recyclerViewScheduledSends.setLayoutManager(scheduledManager);
-            scheduledAdapter = new GalleryAdapter(getContext(), scheduledPhotoList);
-            binding.recyclerViewScheduledSends.setAdapter(scheduledAdapter);
-        }
+        binding.recyclerViewScheduledSends.setLayoutManager(scheduledManager);
+        scheduledAdapter = new GalleryAdapter(getContext(), scheduledPhotoList);
+        binding.recyclerViewScheduledSends.setAdapter(scheduledAdapter);
 
         // --- 2. Setup Bottom Box (Recent Photos) ---
         LinearLayoutManager recentManager = new LinearLayoutManager(getContext(), LinearLayoutManager.HORIZONTAL, false);
@@ -79,22 +79,135 @@ public class DashboardFragment extends Fragment {
         recentAdapter = new GalleryAdapter(getContext(), recentPhotoList);
         binding.recyclerViewRecentPhotos.setAdapter(recentAdapter);
 
-        // Set click listener for the shift toggle button
-        binding.buttonToggleShift.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                toggleShiftState();
+        // --- 3. Setup Selection Logic ---
+        setupSelectionListeners();
+
+        // --- 4. Setup Shift Button ---
+        binding.buttonToggleShift.setOnClickListener(v -> toggleShiftState());
+    }
+
+    private void setupSelectionListeners() {
+        // Listener for Scheduled Adapter
+        scheduledAdapter.setSelectionListener(count -> {
+            if (count > 0) {
+                if (activeSelectionAdapter != scheduledAdapter) {
+                    // If we switched lists, clear the other one
+                    if (recentAdapter != null) recentAdapter.clearSelection();
+                    activeSelectionAdapter = scheduledAdapter;
+                }
+                showSelectionToolbar(count);
+            } else {
+                // If this list is empty and it was the active one, hide toolbar
+                if (activeSelectionAdapter == scheduledAdapter) {
+                    hideSelectionToolbar();
+                    activeSelectionAdapter = null;
+                }
             }
+        });
+
+        // Listener for Recent Adapter
+        recentAdapter.setSelectionListener(count -> {
+            if (count > 0) {
+                if (activeSelectionAdapter != recentAdapter) {
+                    // If we switched lists, clear the other one
+                    if (scheduledAdapter != null) scheduledAdapter.clearSelection();
+                    activeSelectionAdapter = recentAdapter;
+                }
+                showSelectionToolbar(count);
+            } else {
+                if (activeSelectionAdapter == recentAdapter) {
+                    hideSelectionToolbar();
+                    activeSelectionAdapter = null;
+                }
+            }
+        });
+
+        // Toolbar Button Actions
+        binding.btnCloseSelection.setOnClickListener(v -> {
+            if (activeSelectionAdapter != null) activeSelectionAdapter.clearSelection();
+            hideSelectionToolbar();
+        });
+
+        binding.btnSelectAll.setOnClickListener(v -> {
+            if (activeSelectionAdapter != null) activeSelectionAdapter.selectAll();
+        });
+
+        binding.btnDeleteSelection.setOnClickListener(v -> {
+            confirmDeletion();
+        });
+    }
+
+    private void showSelectionToolbar(int count) {
+        binding.cardSelectionToolbar.setVisibility(View.VISIBLE);
+        binding.textSelectionCount.setText(count + " Selected");
+    }
+
+    private void hideSelectionToolbar() {
+        binding.cardSelectionToolbar.setVisibility(View.GONE);
+    }
+
+    private void confirmDeletion() {
+        if (activeSelectionAdapter == null) return;
+
+        int count = activeSelectionAdapter.getSelectedIds().size();
+        new AlertDialog.Builder(getContext())
+                .setTitle("Delete Photos?")
+                .setMessage("Are you sure you want to delete " + count + " photo(s)? This cannot be undone.")
+                .setPositiveButton("Delete", (dialog, which) -> deleteSelectedPhotos())
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void deleteSelectedPhotos() {
+        if (activeSelectionAdapter == null) return;
+
+        List<Long> idsToDelete = activeSelectionAdapter.getSelectedIds();
+        activeSelectionAdapter.clearSelection(); // Clear UI immediately
+        hideSelectionToolbar();
+
+        databaseExecutor.execute(() -> {
+            AppDatabase db = AppDatabase.getDatabase(getContext());
+            PhotoDao dao = db.photoDao();
+
+            for (Long id : idsToDelete) {
+                // 1. Get Photo details to find the file and cancel alarm
+                Photo photo = dao.getPhotoById(id);
+                if (photo != null) {
+                    // 2. Cancel Alarm (Crucial for Scheduled photos)
+                    Scheduler.cancelPhotoSend(getContext(), photo.getId());
+
+                    // 3. Delete Physical File
+                    try {
+                        File file = new File(photo.getFilePath());
+                        if (file.exists()) {
+                            file.delete();
+                        }
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+
+            // 4. Delete from Database
+            dao.deletePhotos(idsToDelete);
+
+            // 5. Refresh UI
+            new Handler(Looper.getMainLooper()).post(() -> {
+                Toast.makeText(getContext(), "Photos Deleted", Toast.LENGTH_SHORT).show();
+                loadDashboardData(); // Reload everything
+            });
         });
     }
 
     @Override
     public void onResume() {
         super.onResume();
-        // Load UI state
         updateUI();
-        // Load Data from DB
         loadDashboardData();
+        // Reset selection on resume
+        if (scheduledAdapter != null) scheduledAdapter.clearSelection();
+        if (recentAdapter != null) recentAdapter.clearSelection();
+        hideSelectionToolbar();
     }
 
     /**
@@ -105,10 +218,10 @@ public class DashboardFragment extends Fragment {
 
         databaseExecutor.execute(() -> {
             AppDatabase db = AppDatabase.getDatabase(getContext());
-            
+
             // 1. Get Pending Photos (For Top Box)
             List<Photo> pendingPhotos = db.photoDao().getPendingPhotos();
-            
+
             // 2. Get Recent Photos (For Bottom Box) - Limit to 10
             List<Photo> recentPhotos = db.photoDao().getRecentPhotos(10);
 
@@ -122,6 +235,15 @@ public class DashboardFragment extends Fragment {
                     }
                     if (scheduledAdapter != null) {
                         scheduledAdapter.notifyDataSetChanged();
+                    }
+
+                    // Handle Empty State for Scheduled
+                    if (scheduledPhotoList.isEmpty()) {
+                        binding.textNoScheduled.setVisibility(View.VISIBLE);
+                        binding.recyclerViewScheduledSends.setVisibility(View.GONE);
+                    } else {
+                        binding.textNoScheduled.setVisibility(View.GONE);
+                        binding.recyclerViewScheduledSends.setVisibility(View.VISIBLE);
                     }
 
                     // Update Recent List
@@ -148,10 +270,10 @@ public class DashboardFragment extends Fragment {
         long lastActionTime = prefs.getLong(KEY_LAST_ACTION_TIME, 0);
 
         if (isShiftActive) {
-            // Shift is currently running
+            binding.textShiftStatus.setText("Status: ON DUTY");
             binding.buttonToggleShift.setText("End Shift");
         } else {
-            // Shift is not running
+            binding.textShiftStatus.setText("Status: OFF DUTY");
             binding.buttonToggleShift.setText("Start Shift");
         }
     }
@@ -164,18 +286,14 @@ public class DashboardFragment extends Fragment {
         SharedPreferences.Editor editor = prefs.edit();
 
         if (isCurrentlyActive) {
-            // Logic to END the shift
             editor.putBoolean(KEY_IS_SHIFT_ACTIVE, false);
             editor.putLong(KEY_LAST_ACTION_TIME, System.currentTimeMillis());
             editor.apply();
-
             Toast.makeText(getContext(), "Shift Ended. Good job!", Toast.LENGTH_SHORT).show();
         } else {
-            // Logic to START the shift
             editor.putBoolean(KEY_IS_SHIFT_ACTIVE, true);
             editor.putLong(KEY_LAST_ACTION_TIME, System.currentTimeMillis());
             editor.apply();
-
             Toast.makeText(getContext(), "Shift Started. Tracking active.", Toast.LENGTH_SHORT).show();
         }
 
@@ -185,7 +303,7 @@ public class DashboardFragment extends Fragment {
     @Override
     public void onDestroyView() {
         super.onDestroyView();
-        binding = null; 
+        binding = null;
         if (databaseExecutor != null) {
             databaseExecutor.shutdown();
         }
