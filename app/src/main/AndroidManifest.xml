@@ -52,12 +52,12 @@
             android:exported="false"
             android:windowSoftInputMode="adjustPan" />
 
-        <!-- The Service for sending scheduled images -->
-        <service
-            android:name=".services.SendService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
+        <!-- REMOVED: SendService (Replaced by AlarmReceiver for Background Support) -->
+
+        <!-- ADDED: AlarmReceiver - The new "Doorbell" that works in the background -->
+        <receiver 
+            android:name=".receivers.AlarmReceiver" 
+            android:exported="false" />
 
         <!-- The optional Accessibility Service for automating WhatsApp sends -->
         <service
