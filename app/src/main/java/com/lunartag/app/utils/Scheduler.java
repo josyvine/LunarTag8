@@ -7,17 +7,18 @@ import android.content.Intent;
 import android.os.Build;
 import android.util.Log;
 
-import com.lunartag.app.services.SendService;
+import com.lunartag.app.receivers.AlarmReceiver;
 
 /**
  * A utility class to handle scheduling photo sends using the AlarmManager.
+ * UPDATED: Now triggers a BroadcastReceiver to support Android 12+ background execution.
  */
 public class Scheduler {
 
     private static final String TAG = "Scheduler";
 
     /**
-     * Schedules an exact alarm to trigger the SendService for a specific photo.
+     * Schedules an exact alarm to trigger the AlarmReceiver for a specific photo.
      * @param context The application context.
      * @param photoId A unique identifier for the photo (e.g., its local database ID).
      * @param filePath The absolute path to the photo file to be sent.
@@ -30,13 +31,17 @@ public class Scheduler {
             return;
         }
 
-        Intent intent = new Intent(context, SendService.class);
-        intent.putExtra(SendService.EXTRA_FILE_PATH, filePath);
+        // FIX: Target the AlarmReceiver instead of the Service
+        Intent intent = new Intent(context, AlarmReceiver.class);
+        intent.putExtra(AlarmReceiver.EXTRA_FILE_PATH, filePath);
 
         // We use the photoId as the request code for the PendingIntent. This ensures
-        // that each photo has a unique alarm. Using FLAG_IMMUTABLE is required for newer Android versions.
+        // that each photo has a unique alarm.
         int requestCode = (int) photoId;
-        PendingIntent pendingIntent = PendingIntent.getService(
+
+        // FIX: Use getBroadcast() instead of getService(). 
+        // This allows the alarm to fire even if the app is killed/backgrounded.
+        PendingIntent pendingIntent = PendingIntent.getBroadcast(
                 context,
                 requestCode,
                 intent,
@@ -70,9 +75,11 @@ public class Scheduler {
             return;
         }
 
-        Intent intent = new Intent(context, SendService.class);
+        // FIX: Must match the original Intent (Receiver) exactly to cancel it
+        Intent intent = new Intent(context, AlarmReceiver.class);
         int requestCode = (int) photoId;
-        PendingIntent pendingIntent = PendingIntent.getService(
+        
+        PendingIntent pendingIntent = PendingIntent.getBroadcast(
                 context,
                 requestCode,
                 intent,
@@ -85,4 +92,4 @@ public class Scheduler {
             Log.d(TAG, "Canceled scheduled send for photo ID " + photoId);
         }
     }
-                }
+}
