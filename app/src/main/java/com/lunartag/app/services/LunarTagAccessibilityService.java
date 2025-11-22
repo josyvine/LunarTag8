@@ -17,8 +17,7 @@ import java.util.List;
 
 /**
  * The Automation Brain.
- * UPDATED: Supports "Semi-Automatic" (User clicks share) and "Full-Automatic" (Zero Click).
- * Handles Notification clicking, App Selection (Clones), and WhatsApp Sending.
+ * UPDATED: Fixed Scrolling, Two-Step Clone Detection, and Full-Auto Logic.
  */
 public class LunarTagAccessibilityService extends AccessibilityService {
 
@@ -27,15 +26,16 @@ public class LunarTagAccessibilityService extends AccessibilityService {
     // --- Shared Memory Constants ---
     private static final String PREFS_ACCESSIBILITY = "LunarTagAccessPrefs";
     
-    // Keys must match what we will save in RobotFragment and AppsFragment
+    // Keys
     private static final String KEY_TARGET_GROUP = "target_group_name";
     private static final String KEY_JOB_PENDING = "job_is_pending";
     private static final String KEY_AUTO_MODE = "automation_mode"; // "semi" or "full"
     private static final String KEY_TARGET_APP_LABEL = "target_app_label"; // e.g., "WhatsApp" or "WhatsApp (Clone)"
 
+    private boolean isScrolling = false;
+
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        // 1. Check if we have a pending job. If not, do nothing.
         SharedPreferences prefs = getSharedPreferences(PREFS_ACCESSIBILITY, Context.MODE_PRIVATE);
         boolean isJobPending = prefs.getBoolean(KEY_JOB_PENDING, false);
 
@@ -46,21 +46,26 @@ public class LunarTagAccessibilityService extends AccessibilityService {
         String mode = prefs.getString(KEY_AUTO_MODE, "semi");
         String targetGroupName = prefs.getString(KEY_TARGET_GROUP, "");
         String targetAppLabel = prefs.getString(KEY_TARGET_APP_LABEL, "WhatsApp");
+        
+        AccessibilityNodeInfo rootNode = getRootInActiveWindow();
+        if (rootNode == null) return;
+
+        CharSequence packageNameSeq = event.getPackageName();
+        String packageName = (packageNameSeq != null) ? packageNameSeq.toString().toLowerCase() : "";
 
         // ---------------------------------------------------------
         // STEP 1: HANDLE NOTIFICATION (Full Automatic Only)
         // ---------------------------------------------------------
         if (mode.equals("full") && event.getEventType() == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED) {
-            // Check if this notification is from OUR app
-            if (event.getPackageName() != null && event.getPackageName().toString().equals(getPackageName())) {
+            if (packageName.equals(getPackageName())) {
                 Parcelable data = event.getParcelableData();
                 if (data instanceof Notification) {
-                    showLiveLog("Auto: Notification Detected. Clicking...");
+                    showLiveLog("Auto: Clicking Notification...");
                     try {
                         Notification notification = (Notification) data;
                         if (notification.contentIntent != null) {
                             notification.contentIntent.send();
-                            return; // Wait for the next screen (Share Sheet)
+                            return; 
                         }
                     } catch (PendingIntent.CanceledException e) {
                         e.printStackTrace();
@@ -69,97 +74,141 @@ public class LunarTagAccessibilityService extends AccessibilityService {
             }
         }
 
-        // Get the screen content
-        AccessibilityNodeInfo rootNode = getRootInActiveWindow();
-        if (rootNode == null) return;
-
-        CharSequence packageNameSeq = event.getPackageName();
-        String packageName = (packageNameSeq != null) ? packageNameSeq.toString().toLowerCase() : "";
-
         // ---------------------------------------------------------
-        // STEP 2: HANDLE SHARE SHEET / APP SELECTION (Full Automatic Only)
+        // STEP 2: HANDLE APP SELECTION (System Share Sheet)
         // ---------------------------------------------------------
-        // If we are in "Full" mode, we need to find the App the user selected (e.g., "WhatsApp Clone")
-        // System share sheets usually run under 'android' or 'com.android...' packages.
-        if (mode.equals("full")) {
-            // We assume we are in the chooser if we are NOT in WhatsApp yet
-            if (!packageName.contains("whatsapp")) {
-                List<AccessibilityNodeInfo> appNodes = rootNode.findAccessibilityNodeInfosByText(targetAppLabel);
-                if (appNodes != null && !appNodes.isEmpty()) {
-                    for (AccessibilityNodeInfo node : appNodes) {
-                        if (node.isClickable()) {
-                            showLiveLog("Auto: Found App '" + targetAppLabel + "'. Clicking...");
-                            node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                            rootNode.recycle();
-                            return; 
-                        } else {
-                            // Sometimes the text is inside a parent that is clickable
-                            AccessibilityNodeInfo parent = node.getParent();
-                            if (parent != null && parent.isClickable()) {
-                                showLiveLog("Auto: Found App '" + targetAppLabel + "'. Clicking...");
-                                parent.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                                rootNode.recycle();
-                                return;
-                            }
-                        }
-                    }
-                }
+        // If we are NOT in WhatsApp yet, we try to find the app.
+        // We look for "WhatsApp (Clone)" first, then "WhatsApp" (Parent).
+        if (mode.equals("full") && !packageName.contains("whatsapp")) {
+            
+            // 1. Try to find the exact Target App Label (e.g. "WhatsApp (Clone)")
+            if (clickNodeByText(rootNode, targetAppLabel)) {
+                showLiveLog("Auto: Selected '" + targetAppLabel + "'");
+                return;
             }
+
+            // 2. CLONE LOGIC: If exact match not found, check if it's hidden inside "WhatsApp" parent
+            // Only do this if the target contains "Clone" or "Dual" but we only see "WhatsApp"
+            if (targetAppLabel.toLowerCase().contains("clone") || targetAppLabel.toLowerCase().contains("dual")) {
+                 if (clickNodeByText(rootNode, "WhatsApp")) {
+                     showLiveLog("Auto: Clicking Parent 'WhatsApp' to find Clone...");
+                     return;
+                 }
+            }
+            
+            // 3. If neither found, try scrolling the Share Sheet
+            // (System share sheets are often scrollable)
+            performScroll(rootNode);
         }
 
         // ---------------------------------------------------------
-        // STEP 3: HANDLE WHATSAPP (Both Semi & Full)
+        // STEP 3: HANDLE WHATSAPP (Chat List & Send Screen)
         // ---------------------------------------------------------
-        // Only proceed if the active app is WhatsApp (or a clone package containing 'whatsapp')
         if (packageName.contains("whatsapp")) {
             
-            // A. Priority: Find "Send" Button FIRST (To finish the job and stop loops)
-            List<AccessibilityNodeInfo> sendButtonNodes = rootNode.findAccessibilityNodeInfosByText("Send");
-            if (sendButtonNodes != null && !sendButtonNodes.isEmpty()) {
-                for (AccessibilityNodeInfo node : sendButtonNodes) {
-                    if (node.isClickable()) {
-                        showLiveLog("Auto: Found 'Send' Button. Clicking...");
-                        node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-
-                        // --- JOB COMPLETE: Turn off the flag ---
-                        prefs.edit().putBoolean(KEY_JOB_PENDING, false).apply();
-                        showLiveLog("Auto-Send Complete! Job Finished.");
-
-                        rootNode.recycle();
-                        return; // Done.
-                    }
-                }
+            // A. Priority: Always look for "Send" button (Paper Plane) FIRST.
+            // This handles the final preview screen.
+            if (clickNodeByContentDescription(rootNode, "Send") || clickNodeByText(rootNode, "Send")) {
+                showLiveLog("Auto: 'Send' Clicked. Job Done.");
+                prefs.edit().putBoolean(KEY_JOB_PENDING, false).apply();
+                return; 
             }
 
-            // B. Secondary: Find the Group Name (e.g., "Love")
+            // B. Secondary: Find the Group Name in the list
             if (!targetGroupName.isEmpty()) {
-                List<AccessibilityNodeInfo> groupNodes = rootNode.findAccessibilityNodeInfosByText(targetGroupName);
-                if (groupNodes != null && !groupNodes.isEmpty()) {
-                    for (AccessibilityNodeInfo node : groupNodes) {
-                        // Check hierarchy for clickability
-                        AccessibilityNodeInfo clickableNode = node;
-                        if (!clickableNode.isClickable()) {
-                            clickableNode = node.getParent();
-                        }
-                        
-                        if (clickableNode != null && clickableNode.isClickable()) {
-                            showLiveLog("Auto: Found Group '" + targetGroupName + "'. Clicking...");
-                            clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                            rootNode.recycle();
-                            return;
-                        }
-                    }
+                // 1. Try finding the text directly
+                if (clickNodeByText(rootNode, targetGroupName)) {
+                    showLiveLog("Auto: Found Group '" + targetGroupName + "'");
+                    return;
                 }
+
+                // 2. SCROLL LOGIC: If text not found, we must scroll down
+                performScroll(rootNode);
             }
         }
-
-        // Clean up
-        rootNode.recycle();
+        
+        // Clean up resource
+        // rootNode.recycle(); // Note: Some Android versions recycle auto, but explicit is safer
     }
 
     /**
-     * Live Log Helper: Shows visual confirmation of background actions on screen.
+     * Helper: Finds a node by text and clicks it (or its parent).
      */
+    private boolean clickNodeByText(AccessibilityNodeInfo root, String text) {
+        List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(text);
+        if (nodes != null && !nodes.isEmpty()) {
+            for (AccessibilityNodeInfo node : nodes) {
+                if (performClick(node)) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Helper: Finds a node by Content Description (essential for Image Buttons like "Send").
+     */
+    private boolean clickNodeByContentDescription(AccessibilityNodeInfo root, String desc) {
+        return recursiveSearchAndClick(root, desc);
+    }
+
+    private boolean recursiveSearchAndClick(AccessibilityNodeInfo node, String desc) {
+        if (node == null) return false;
+        
+        if (node.getContentDescription() != null && 
+            node.getContentDescription().toString().equalsIgnoreCase(desc)) {
+            return performClick(node);
+        }
+
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (recursiveSearchAndClick(node.getChild(i), desc)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Helper: Checks if a node is clickable, if not checks parent. Then clicks.
+     */
+    private boolean performClick(AccessibilityNodeInfo node) {
+        AccessibilityNodeInfo target = node;
+        while (target != null) {
+            if (target.isClickable()) {
+                target.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                return true;
+            }
+            target = target.getParent();
+        }
+        return false;
+    }
+
+    /**
+     * Helper: Finds a scrollable container and scrolls forward.
+     * Uses a boolean flag/timestamp to prevent spamming scrolls too fast.
+     */
+    private void performScroll(AccessibilityNodeInfo root) {
+        if (isScrolling) return; // Debounce
+
+        AccessibilityNodeInfo scrollable = findScrollableNode(root);
+        if (scrollable != null) {
+            isScrolling = true;
+            showLiveLog("Auto: Scrolling...");
+            scrollable.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
+            
+            // Reset flag after a delay
+            new Handler(Looper.getMainLooper()).postDelayed(() -> isScrolling = false, 1000);
+        }
+    }
+
+    private AccessibilityNodeInfo findScrollableNode(AccessibilityNodeInfo node) {
+        if (node == null) return null;
+        if (node.isScrollable()) return node;
+
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo result = findScrollableNode(node.getChild(i));
+            if (result != null) return result;
+        }
+        return null;
+    }
+
     private void showLiveLog(String message) {
         new Handler(Looper.getMainLooper()).post(() ->
                 Toast.makeText(getApplicationContext(), message, Toast.LENGTH_SHORT).show()
@@ -168,12 +217,6 @@ public class LunarTagAccessibilityService extends AccessibilityService {
 
     @Override
     public void onInterrupt() {
-        Log.d(TAG, "Accessibility service interrupted.");
-    }
-
-    @Override
-    protected void onServiceConnected() {
-        super.onServiceConnected();
-        showLiveLog("LunarTag Automation Ready");
+        Log.d(TAG, "Service Interrupted");
     }
 }
