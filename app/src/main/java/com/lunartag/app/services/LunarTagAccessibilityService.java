@@ -5,6 +5,7 @@ import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.accessibility.AccessibilityEvent;
@@ -13,6 +14,14 @@ import android.widget.Toast;
 
 import java.util.List;
 
+/**
+ * LUNARTAG ROBOT - AI ENHANCED EDITION
+ * 
+ * FEATURES:
+ * 1. AI VISION: Uses AiClicker to visually find "Clone" and "Group Name".
+ * 2. SOURCE TRACKING: Prevents interference with personal WhatsApp.
+ * 3. HYBRID SCROLLING: Scrolls if AI cannot see the target.
+ */
 public class LunarTagAccessibilityService extends AccessibilityService {
 
     private static final String PREFS_ACCESSIBILITY = "LunarTagAccessPrefs";
@@ -28,12 +37,16 @@ public class LunarTagAccessibilityService extends AccessibilityService {
     private int currentState = STATE_IDLE;
     private boolean isScrolling = false;
     
-    // TRACKING SOURCE (To fix Personal WhatsApp Interference)
+    // SOURCE TRACKING
     private String previousAppPackage = ""; 
+
+    // AI HELPER
+    private AiClicker aiClicker;
 
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
+        
         AccessibilityServiceInfo info = new AccessibilityServiceInfo();
         info.eventTypes = AccessibilityEvent.TYPES_ALL_MASK; 
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC;
@@ -43,8 +56,11 @@ public class LunarTagAccessibilityService extends AccessibilityService {
                      AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
         setServiceInfo(info);
         
+        // INITIALIZE THE AI EYES
+        aiClicker = new AiClicker(this);
+
         currentState = STATE_IDLE;
-        performBroadcastLog("🔴 ROBOT READY. WAITING FOR COMMAND...");
+        performBroadcastLog("👁️ AI ROBOT READY. WAITING FOR COMMAND...");
     }
 
     @Override
@@ -52,97 +68,112 @@ public class LunarTagAccessibilityService extends AccessibilityService {
         if (event == null || event.getPackageName() == null) return;
         String pkgName = event.getPackageName().toString().toLowerCase();
 
-        // 1. FILTER NOISE (Ignore Keyboard/SystemUI so we don't lose track of source)
+        // 1. IGNORE SYSTEM NOISE
         if (pkgName.contains("inputmethod") || pkgName.contains("systemui")) return;
 
         SharedPreferences prefs = getSharedPreferences(PREFS_ACCESSIBILITY, Context.MODE_PRIVATE);
         String mode = prefs.getString(KEY_AUTO_MODE, "semi");
         AccessibilityNodeInfo root = getRootInActiveWindow();
 
-        // 2. TERRITORY LOGIC (Define where we are)
+        // 2. DEFINE TERRITORY
         boolean isWhatsApp = pkgName.contains("whatsapp");
         boolean isShareSheet = pkgName.equals("android") || pkgName.contains("ui") || pkgName.contains("resolver");
         boolean isMyApp = pkgName.contains("lunartag");
 
-        // 3. TRACK SOURCE (The "Personal Safety" Logic)
-        // If we are NOT in WhatsApp/ShareSheet, we record what app user is using.
+        // 3. PERSONAL SAFETY (SOURCE TRACKING)
         if (!isWhatsApp && !isShareSheet) {
             previousAppPackage = pkgName;
-            
-            // IF USER OPENS OTHER APPS (Chrome, Settings, etc) -> KILL ROBOT IMMEDIATE
-            if (currentState != STATE_IDLE && !isMyApp) {
-                performBroadcastLog("🛑 Other App Opened. Robot Stopped.");
+            // If user switches to a foreign app, STOP.
+            if (!isMyApp && currentState != STATE_IDLE) {
+                performBroadcastLog("🛑 Switched App. Robot Stopped.");
                 currentState = STATE_IDLE;
             }
-            return; // Stop processing.
+            return; 
         }
 
         // ====================================================================
-        // 4. FULL AUTO: SHARE SHEET LOGIC (SCROLL & CLICK CLONE)
+        // 4. FULL AUTOMATIC: SHARE SHEET (AI POWERED)
         // ====================================================================
         if (mode.equals("full") && isShareSheet) {
             
-            // Only run if we came from valid apps (Not Launcher)
-            // But if user wants Full Auto, we generally assume they want it to work.
-            // We set state to SEARCHING immediately.
             if (currentState == STATE_IDLE) currentState = STATE_SEARCHING_SHARE_SHEET;
 
             if (currentState == STATE_SEARCHING_SHARE_SHEET) {
-                if (root == null) return;
+                // CHECK ANDROID VERSION (AI needs Android 11+)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    
+                    // USE AI VISION
+                    aiClicker.scanAndClickVisual("Clone", (success) -> {
+                        if (success) {
+                            performBroadcastLog("✅ AI: Saw 'Clone' and Clicked.");
+                            currentState = STATE_SEARCHING_GROUP;
+                        } else {
+                            // AI didn't see it. It must be hidden. SCROLL.
+                            if (!isScrolling) {
+                                performBroadcastLog("📜 AI didn't see target. Scrolling...");
+                                performScroll(root);
+                            }
+                        }
+                    });
 
-                // A. SEARCH FOR "CLONE" (Unique ID)
-                if (scanAndClick(root, "Clone")) {
-                    performBroadcastLog("✅ Full Auto: Clicked 'Clone'");
-                    currentState = STATE_SEARCHING_GROUP;
-                    return;
-                }
-
-                // B. SCROLL & WAIT (Visual Fix for Bottom Sheet)
-                if (!isScrolling) {
-                    performBroadcastLog("📜 Icon hidden. Scrolling...");
-                    performScroll(root);
+                } else {
+                    // FALLBACK FOR OLD PHONES (Standard Logic)
+                    if (scanAndClick(root, "Clone")) {
+                        currentState = STATE_SEARCHING_GROUP;
+                    } else if (!isScrolling) {
+                        performScroll(root);
+                    }
                 }
             }
         }
 
         // ====================================================================
-        // 5. WHATSAPP LOGIC (SEMI & FULL)
+        // 5. WHATSAPP LOGIC (HYBRID)
         // ====================================================================
         if (isWhatsApp) {
             
-            // PERSONAL SAFETY CHECK:
-            // If previous app was "Launcher" (Home Screen), DO NOT AUTO CLICK.
+            // PERSONAL SAFETY CHECK
             if (previousAppPackage.contains("launcher") || previousAppPackage.contains("home")) {
-                // However, we must allow if "Send to" is visible (User might have manually shared)
-                // But generally, we stay IDLE to be safe.
                 if (currentState == STATE_IDLE) return; 
             }
 
             if (root == null) return;
 
-            // A. TRIGGER: "SEND TO..." (Fixes "One Time Only" failure)
-            // If we see this text, we FORCE START the robot.
+            // A. TRIGGER: "SEND TO..." (Text detection is faster than AI for triggers)
             List<AccessibilityNodeInfo> headers = root.findAccessibilityNodeInfosByText("Send to");
             if (headers != null && !headers.isEmpty()) {
                  if (currentState == STATE_IDLE || currentState == STATE_SEARCHING_SHARE_SHEET) {
-                     performBroadcastLog("⚡ 'Send to' detected. Search Started.");
+                     performBroadcastLog("⚡ 'Send to' detected. AI Search Started.");
                      currentState = STATE_SEARCHING_GROUP;
                  }
             }
 
-            // B. SEARCH GROUP
+            // B. SEARCH GROUP (AI or Standard)
             if (currentState == STATE_SEARCHING_GROUP) {
                 String targetGroup = prefs.getString(KEY_TARGET_GROUP, "");
                 if (targetGroup.isEmpty()) return;
 
+                // TRY STANDARD FIRST (Faster)
                 if (scanAndClick(root, targetGroup)) {
-                    performBroadcastLog("✅ Found Group: " + targetGroup);
+                    performBroadcastLog("✅ Found Group (Node Match): " + targetGroup);
                     currentState = STATE_CLICKING_SEND;
                     return;
                 }
 
-                // Scroll if not found
-                performScroll(root);
+                // IF STANDARD FAILS, TRY AI (Smarter)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    aiClicker.scanAndClickVisual(targetGroup, (success) -> {
+                        if (success) {
+                            performBroadcastLog("✅ AI: Visual Match for Group.");
+                            currentState = STATE_CLICKING_SEND;
+                        } else {
+                            if (!isScrolling) performScroll(root);
+                        }
+                    });
+                } else {
+                    // Old phone fallback
+                    if (!isScrolling) performScroll(root);
+                }
             }
 
             // C. CLICK SEND
@@ -151,6 +182,7 @@ public class LunarTagAccessibilityService extends AccessibilityService {
                 if (scanAndClickContentDesc(root, "Send")) sent = true;
                 
                 if (!sent) {
+                    // Try View ID
                     List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId("com.whatsapp:id/send");
                     if (!nodes.isEmpty()) {
                         performClick(nodes.get(0));
@@ -158,7 +190,15 @@ public class LunarTagAccessibilityService extends AccessibilityService {
                     }
                 }
 
-                if (sent) {
+                // If Standard Send failed, Try AI Send
+                if (!sent && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                     aiClicker.scanAndClickVisual("Send", (success) -> {
+                         if (success) {
+                             performBroadcastLog("🚀 AI SENT!");
+                             currentState = STATE_IDLE;
+                         }
+                     });
+                } else if (sent) {
                     performBroadcastLog("🚀 SENT! Job Done.");
                     currentState = STATE_IDLE;
                 }
@@ -167,7 +207,7 @@ public class LunarTagAccessibilityService extends AccessibilityService {
     }
 
     // ====================================================================
-    // UTILITIES (Aggressive Clickers)
+    // STANDARD UTILITIES (FALLBACKS)
     // ====================================================================
 
     private boolean scanAndClick(AccessibilityNodeInfo root, String text) {
@@ -183,10 +223,10 @@ public class LunarTagAccessibilityService extends AccessibilityService {
 
     private boolean recursiveSearch(AccessibilityNodeInfo node, String text) {
         if (node == null) return false;
-        if (node.getText() != null && node.getText().toString().contains(text)) {
+        if (node.getText() != null && node.getText().toString().toLowerCase().contains(text.toLowerCase())) {
             return performClick(node);
         }
-        if (node.getContentDescription() != null && node.getContentDescription().toString().contains(text)) {
+        if (node.getContentDescription() != null && node.getContentDescription().toString().toLowerCase().contains(text.toLowerCase())) {
             return performClick(node);
         }
         for (int i = 0; i < node.getChildCount(); i++) {
@@ -227,8 +267,8 @@ public class LunarTagAccessibilityService extends AccessibilityService {
         if (scrollable != null) {
             isScrolling = true;
             scrollable.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
-            // VISUAL WAIT: 600ms is needed for the animation to finish
-            new Handler(Looper.getMainLooper()).postDelayed(() -> isScrolling = false, 600);
+            // VISUAL WAIT: Essential for AI to have time to see the new screen
+            new Handler(Looper.getMainLooper()).postDelayed(() -> isScrolling = false, 800);
         }
     }
 
