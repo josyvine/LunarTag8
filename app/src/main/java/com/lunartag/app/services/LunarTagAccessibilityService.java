@@ -79,6 +79,7 @@ public class LunarTagAccessibilityService extends AccessibilityService {
             if (!lastPackageName.isEmpty()) {
                 performBroadcastLog("🔄 App Switch Detected: " + pkgName);
                 // Don't reset if we are just transitioning to share sheet or system resolver
+                // "android" and "resolver" are the package names for the "Select App" dialog
                 if (!pkgName.equals("android") && !pkgName.contains("launcher") && !pkgName.contains("resolver")) {
                      currentState = STATE_IDLE; 
                 }
@@ -93,25 +94,40 @@ public class LunarTagAccessibilityService extends AccessibilityService {
         // ====================================================================
         if (mode.equals("full")) {
             
-            // NOTE: The AlarmReceiver has already fired the Direct Intent.
-            // We are now looking at the System Dialog showing "Original vs Clone".
+            // NOTE: AlarmReceiver fired Direct Intent -> System Dialog is Open.
+            // We check !pkgName.contains("whatsapp") because we are in the System Dialog, not WA yet.
             
             if (!pkgName.contains("whatsapp") && root != null) {
-                 // Search for "WhatsApp" text in the dialog
-                 List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText("WhatsApp");
+                
+                 // STRATEGY 1: Explicitly look for "Clone" text (Matches your video)
+                 List<AccessibilityNodeInfo> cloneNodes = root.findAccessibilityNodeInfosByText("Clone");
+                 if (cloneNodes != null && !cloneNodes.isEmpty()) {
+                     performBroadcastLog("✅ Full Auto: Found 'Clone'. Clicking...");
+                     performClick(cloneNodes.get(0));
+                     currentState = STATE_SEARCHING_GROUP;
+                     return;
+                 }
 
+                 // STRATEGY 2: Explicitly look for "Dual" text (Alternative phones)
+                 List<AccessibilityNodeInfo> dualNodes = root.findAccessibilityNodeInfosByText("Dual");
+                 if (dualNodes != null && !dualNodes.isEmpty()) {
+                     performBroadcastLog("✅ Full Auto: Found 'Dual'. Clicking...");
+                     performClick(dualNodes.get(0));
+                     currentState = STATE_SEARCHING_GROUP;
+                     return;
+                 }
+
+                 // STRATEGY 3: Fallback - Count WhatsApps
+                 List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText("WhatsApp");
                  if (nodes != null && !nodes.isEmpty()) {
-                     // CLONE DETECTION LOGIC:
-                     // If 2 items exist, Item #1 (Index 1) is usually the Clone.
                      if (nodes.size() >= 2) {
-                         performBroadcastLog("✅ Full Auto: 2 WhatsApps Found. Clicking Index 1 (Clone)...");
+                         performBroadcastLog("✅ Full Auto: 2 WhatsApps. Clicking Index 1.");
                          performClick(nodes.get(1)); // Click the second one
                          currentState = STATE_SEARCHING_GROUP;
                          return;
                      } 
-                     // If only 1 exists, click it.
                      else if (nodes.size() == 1) {
-                         performBroadcastLog("✅ Full Auto: 1 WhatsApp Found. Clicking Index 0...");
+                         performBroadcastLog("✅ Full Auto: 1 WhatsApp. Clicking Index 0.");
                          performClick(nodes.get(0));
                          currentState = STATE_SEARCHING_GROUP;
                          return;
