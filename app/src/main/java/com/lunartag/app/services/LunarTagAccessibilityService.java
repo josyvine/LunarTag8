@@ -65,8 +65,7 @@ public class LunarTagAccessibilityService extends AccessibilityService {
         if (pkgName.contains("inputmethod") || pkgName.contains("systemui")) return;
 
         AccessibilityNodeInfo root = getRootInActiveWindow();
-        // Note: root can be null in some events, but we might need event.getSource() for learning
-
+        
         SharedPreferences prefs = getSharedPreferences(PREFS_ACCESSIBILITY, Context.MODE_PRIVATE);
         String mode = prefs.getString(KEY_AUTO_MODE, "semi");
 
@@ -78,12 +77,11 @@ public class LunarTagAccessibilityService extends AccessibilityService {
         // 0. TRAINING MODE (TEACH THE ROBOT)
         // ====================================================================
         if (targetAppName.equals("SETUP")) {
-
-            // FIX: CONTEXT CHECK
-            // If we don't see "Share" or "Cancel", we are likely still in Settings or Camera.
-            // Wait until the actual Share Sheet appears before recording clicks.
-            if (root != null && !hasText(root, "Share") && !hasText(root, "Cancel")) {
-                return; // Ignore clicks until Share Sheet is detected
+            
+            // SECURITY CHECK: Don't learn anything until we actually see the Share Sheet.
+            // This prevents the robot from learning "Settings" or "Save" by mistake.
+            if (root == null || (!hasText(root, "Share") && !hasText(root, "Cancel"))) {
+                return; // Wait for the Share Sheet to appear
             }
 
             if (event.getEventType() == AccessibilityEvent.TYPE_VIEW_CLICKED) {
@@ -124,12 +122,11 @@ public class LunarTagAccessibilityService extends AccessibilityService {
         // B. Are we on the Share Sheet? (Look for Target OR "Cancel")
         boolean isShareSheet = hasText(root, targetAppName) || hasText(root, "Cancel") || hasText(root, "Share");
 
-        // SAFETY: If neither Context is visible, STOP.
+        // SAFETY: If neither Context is visible, we might be transitioning. 
+        // DO NOT RESET STATE IMMEDIATELY (Fixes the "3 times" stop bug).
         if (!isWhatsAppUI && !isShareSheet) {
-            if (currentState != STATE_IDLE) {
-                currentState = STATE_IDLE;
-                if (OverlayService.getInstance() != null) OverlayService.getInstance().hideMarker();
-            }
+            // Only reset if we are truly lost for a long time, but for now, just wait.
+            // If the user manually left the app, the service will just wait.
             return; 
         }
 
@@ -152,11 +149,11 @@ public class LunarTagAccessibilityService extends AccessibilityService {
         }
 
         // ====================================================================
-        // 4. WHATSAPP LOGIC (Semi & Full) - UNTOUCHED AS REQUESTED
+        // 4. WHATSAPP LOGIC (Semi & Full) - UNTOUCHED
         // ====================================================================
         if (isWhatsAppUI) {
 
-            // Set State if just arrived
+            // Set State if just arrived or if we were waiting
             if (currentState == STATE_IDLE || currentState == STATE_SEARCHING_SHARE_SHEET) {
                 performBroadcastLog("⚡ WhatsApp Detected. Searching Group...");
                 currentState = STATE_SEARCHING_GROUP;
@@ -210,7 +207,6 @@ public class LunarTagAccessibilityService extends AccessibilityService {
 
     private boolean hasText(AccessibilityNodeInfo root, String text) {
         if (root == null || text == null) return false;
-        // Fuzzy Match: Remove spaces/newlines/brackets to match recorded signatures
         String cleanTarget = cleanString(text);
 
         List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(cleanTarget);
@@ -283,11 +279,12 @@ public class LunarTagAccessibilityService extends AccessibilityService {
         return false;
     }
 
-    // Helper to normalize text for comparison (Fixes "WhatsApp(Clone )" issues)
+    // Helper to normalize text for comparison
     private String cleanString(String input) {
         if (input == null) return "";
         return input.toLowerCase()
                 .replace(" ", "")
+                .replace("\u200B", "") // Remove zero-width spaces often found in WhatsApp
                 .replace("\n", "")
                 .trim();
     }
